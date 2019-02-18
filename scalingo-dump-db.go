@@ -27,13 +27,12 @@ type DbSetup struct {
 	Database string
 }
 
-
-func get_postgres_setup(app string) (DbSetup, error) {
-	retrieve := exec.Command("bash", "-c", fmt.Sprintf("scalingo -a %s env | grep ^SCALINGO_POSTGRESQL_URL", app))
+func get_db_setup(app string, env string, url_prefix string) (DbSetup, error) {
+	retrieve := exec.Command("bash", "-c", fmt.Sprintf("scalingo -a %s env | grep ^%s", app, env))
 	out, err := retrieve.CombinedOutput()
 	check(err)
 
-	re := regexp.MustCompile("postgres://([^:]+):([^@]+)@[^/]+/([^?]+)([?]|$)")
+	re := regexp.MustCompile(fmt.Sprintf("%s://([^:]+):([^@]+)@[^/]+/([^?]+)([?]|$)", url_prefix))
 	matches := re.FindStringSubmatch(string(out))
 	if matches != nil {
 		return DbSetup{User: matches[1], Password: matches[2], Database: matches[3]}, nil
@@ -42,19 +41,18 @@ func get_postgres_setup(app string) (DbSetup, error) {
 	}
 }
 
-func dump_postgres(scalingo_app string, port string, file string) error {
-	tunnel := exec.Command("scalingo", "db-tunnel", "-a", scalingo_app, "-p", port, "SCALINGO_POSTGRESQL_URL")
+func dump_operation(scalingo_app string, port string, file string, url_env string, url_prefix string, cmd_maker func (DbSetup) *exec.Cmd) error {
+	tunnel := exec.Command("scalingo", "db-tunnel", "-a", scalingo_app, "-p", port, url_env)
 	tunnel.Start()
 	//TODO wait for message in stdout to start dump
 
-	setup,err := get_postgres_setup(scalingo_app)
+	setup,err := get_db_setup(scalingo_app, url_env, url_prefix)
 	check(err)
 
-	dump := exec.Command("pg_dump", "-h", "127.0.0.1", "-p", port, "-U", setup.User, "-w", setup.Database)
-	dump.Env = []string{fmt.Sprintf("PGPASSWORD=%s", setup.Password)}
+	dump := cmd_maker(setup)
 
 	if file == "" {
-		file = default_file(scalingo_app, "pg")
+		file = default_file(scalingo_app, url_prefix)
 	}
 	backup,err := os.Create(file)
 	check(err)
@@ -63,6 +61,25 @@ func dump_postgres(scalingo_app string, port string, file string) error {
 	dump.Run()
 	return nil
 }
+
+func dump_postgres(scalingo_app string, port string, file string) error {
+	cmd_maker := func (setup DbSetup) *exec.Cmd {
+		dump := exec.Command("pg_dump", "-h", "127.0.0.1", "-p", port, "-U", setup.User, "-w", setup.Database)
+		dump.Env = []string{fmt.Sprintf("PGPASSWORD=%s", setup.Password)}
+		return dump
+	}
+	return dump_operation(scalingo_app, port, file, "SCALINGO_POSTGRESQL_URL", "postgres", cmd_maker)
+}
+
+func dump_mysql(scalingo_app string, port string, file string) error {
+	cmd_maker := func (setup DbSetup) *exec.Cmd {
+		dump := exec.Command("mysqldump", "-h", "127.0.0.1", "-P", port, "-u", setup.User, fmt.Sprintf("--password=%s", setup.Password), setup.Database)
+		return dump
+	}
+	return dump_operation(scalingo_app, port, file, "SCALINGO_MYSQL_URL", "mysql", cmd_maker)
+}
+
+
 
 func main () {
 	var scalingo_app, port, file string
@@ -83,6 +100,13 @@ func main () {
 			Usage: "dump the PostgreSQL database",
 			Action: func(c *cli.Context) error {
 				return dump_postgres(scalingo_app, port, file)
+			},
+		},
+		{
+			Name: "mysql",
+			Usage: "dump the MySQL database",
+			Action: func(c *cli.Context) error {
+				return dump_mysql(scalingo_app, port, file)
 			},
 		},
 	}
