@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-func check(e error) {
+func panic_if(e error) {
 	if e != nil {
 		panic(e)
 	}
@@ -45,7 +45,7 @@ type DbSetup struct {
 func get_db_setup(app string, env string, url_prefix string) (DbSetup, error) {
 	retrieve := exec.Command("bash", "-c", fmt.Sprintf("scalingo -a %s env | grep ^%s", app, env))
 	out, err := retrieve.CombinedOutput()
-	check(err)
+	panic_if(err)
 
 	re := regexp.MustCompile(fmt.Sprintf("%s://([^:]+):([^@]+)@[^/]+/([^?]+)([?]|$)", url_prefix))
 	matches := re.FindStringSubmatch(string(out))
@@ -62,7 +62,7 @@ func dump_operation(scalingo_app string, port string, file string, url_env strin
 	//TODO wait for message in stdout to start dump
 
 	setup,err := get_db_setup(scalingo_app, url_env, url_prefix)
-	check(err)
+	panic_if(err)
 
 	dump := cmd_maker(setup)
 
@@ -70,7 +70,7 @@ func dump_operation(scalingo_app string, port string, file string, url_env strin
 		file = default_file(scalingo_app, url_prefix)
 	}
 	backup,err := os.Create(file)
-	check(err)
+	panic_if(err)
 
 	dump.Stdout = backup
 	dump.Run()
