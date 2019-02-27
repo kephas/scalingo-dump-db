@@ -32,81 +32,98 @@ func panic_if(e error) {
 	}
 }
 
+func debug(setup Setup, object interface{}) {
+	if setup.Debug {
+		log.Printf("%v", object)
+	}
+}
+
 func default_file(app string, db string) string {
 	return fmt.Sprintf("%s_%s_%s.bak", app, db, time.Now().Format(time.RFC3339))
 }
 
-type DbSetup struct {
+type Setup struct {
+	App string
+	Port string
+	File string
+	Debug bool
 	User string
 	Password string
 	Database string
 }
 
-func get_db_setup(app string, env string, url_prefix string) (DbSetup, error) {
-	retrieve := exec.Command("bash", "-c", fmt.Sprintf("scalingo -a %s env | grep ^%s", app, env))
+func get_db_setup(setup Setup, env string, url_prefix string) (Setup, error) {
+	retrieve := exec.Command("bash", "-c", fmt.Sprintf("scalingo -a %s env | grep ^%s", setup.App, env))
 	out, err := retrieve.CombinedOutput()
 	panic_if(err)
 
 	re := regexp.MustCompile(fmt.Sprintf("%s://([^:]+):([^@]+)@[^/]+/([^?]+)([?]|$)", url_prefix))
 	matches := re.FindStringSubmatch(string(out))
 	if matches != nil {
-		return DbSetup{User: matches[1], Password: matches[2], Database: matches[3]}, nil
+		setup.User = matches[1]
+		setup.Password = matches[2]
+		setup.Database = matches[3]
+		return setup, nil
 	} else {
-		return DbSetup{}, errors.New("impossible to parse URL")
+		return setup, errors.New("impossible to parse URL")
 	}
 }
 
-func dump_operation(scalingo_app string, port string, file string, url_env string, url_prefix string, cmd_maker func (DbSetup) *exec.Cmd) error {
-	tunnel := exec.Command("scalingo", "db-tunnel", "-a", scalingo_app, "-p", port, url_env)
+func dump_operation(setup Setup, url_env string, url_prefix string, cmd_maker func (Setup) *exec.Cmd) error {
+	tunnel := exec.Command("scalingo", "db-tunnel", "-a", setup.App, "-p", setup.Port, url_env)
+	debug(setup, tunnel)
 	tunnel.Start()
 	//TODO wait for message in stdout to start dump
 
-	setup,err := get_db_setup(scalingo_app, url_env, url_prefix)
+	setup,err := get_db_setup(setup, url_env, url_prefix)
 	panic_if(err)
 
 	dump := cmd_maker(setup)
-
-	if file == "" {
-		file = default_file(scalingo_app, url_prefix)
+	debug(setup, dump)
+	if setup.File == "" {
+		setup.File = default_file(setup.App, url_prefix)
 	}
-	backup,err := os.Create(file)
+	backup,err := os.Create(setup.File)
 	panic_if(err)
 
 	dump.Stdout = backup
 	dump.Run()
+	// if err = tunnel.Process.Kill(); err != nil {
+	// 	log.Printf("couldn't kill tunnel; %v" , err)
+	//}
 	return nil
 }
 
-func dump_postgres(scalingo_app string, port string, file string) error {
-	cmd_maker := func (setup DbSetup) *exec.Cmd {
-		dump := exec.Command("pg_dump", "-h", "127.0.0.1", "-p", port, "-U", setup.User, "-w", setup.Database)
+func dump_postgres(setup Setup) error {
+	cmd_maker := func (setup Setup) *exec.Cmd {
+		dump := exec.Command("pg_dump", "-h", "127.0.0.1", "-p", setup.Port, "-U", setup.User, "-w", setup.Database)
 		dump.Env = []string{fmt.Sprintf("PGPASSWORD=%s", setup.Password)}
 		return dump
 	}
-	return dump_operation(scalingo_app, port, file, "SCALINGO_POSTGRESQL_URL", "postgres", cmd_maker)
+	return dump_operation(setup, "SCALINGO_POSTGRESQL_URL", "postgres", cmd_maker)
 }
 
-func dump_mysql(scalingo_app string, port string, file string) error {
-	cmd_maker := func (setup DbSetup) *exec.Cmd {
-		dump := exec.Command("mysqldump", "-h", "127.0.0.1", "-P", port, "-u", setup.User, fmt.Sprintf("--password=%s", setup.Password), setup.Database)
-		log.Printf("%v", dump)
+func dump_mysql(setup Setup) error {
+	cmd_maker := func (setup Setup) *exec.Cmd {
+		dump := exec.Command("mysqldump", "-h", "127.0.0.1", "-P", setup.Port, "-u", setup.User, fmt.Sprintf("--password=%s", setup.Password), setup.Database)
 		return dump
 	}
-	return dump_operation(scalingo_app, port, file, "SCALINGO_MYSQL_URL", "mysql", cmd_maker)
+	return dump_operation(setup, "SCALINGO_MYSQL_URL", "mysql", cmd_maker)
 }
 
 
 
 func main () {
-	var scalingo_app, port, file string
+	var setup Setup
 
 	app := cli.NewApp()
 	app.Name = "Scalingo Database dumper"
 	app.Version = "0.1"
 	app.Flags = []cli.Flag{
-		cli.StringFlag{Name: "app, a", Destination: &scalingo_app},
-		cli.StringFlag{Name: "port, p", Value: "31415", Destination: &port},
-		cli.StringFlag{Name: "file, f", Destination: &file},
+		cli.StringFlag{Name: "app, a", Destination: &setup.App},
+		cli.StringFlag{Name: "port, p", Value: "31415", Destination: &setup.Port},
+		cli.StringFlag{Name: "file, f", Destination: &setup.File},
+		cli.BoolFlag{Name: "debug, d", Destination: &setup.Debug},
 	}
 
 	app.Commands = []cli.Command {
@@ -115,14 +132,14 @@ func main () {
 			Aliases: []string{"postgres", "postgresql"},
 			Usage: "dump the PostgreSQL database",
 			Action: func(c *cli.Context) error {
-				return dump_postgres(scalingo_app, port, file)
+				return dump_postgres(setup)
 			},
 		},
 		{
 			Name: "mysql",
 			Usage: "dump the MySQL database",
 			Action: func(c *cli.Context) error {
-				return dump_mysql(scalingo_app, port, file)
+				return dump_mysql(setup)
 			},
 		},
 	}
