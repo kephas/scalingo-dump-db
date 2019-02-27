@@ -87,6 +87,9 @@ func dump_operation(setup Setup, url_env string, url_prefix string, cmd_maker fu
 	panic_if(err)
 
 	dump.Stdout = backup
+	if setup.Debug {
+		dump.Stderr = os.Stderr
+	}
 	dump.Run()
 	// if err = tunnel.Process.Kill(); err != nil {
 	// 	log.Printf("couldn't kill tunnel; %v" , err)
